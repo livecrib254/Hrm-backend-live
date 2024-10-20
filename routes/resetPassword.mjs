@@ -21,7 +21,7 @@ const transporter = nodemailer.createTransport({
 
 router.post("/forgotpassword", async (req, res) => {
   const { email } = req.body;
-
+  console.log(email);
   try {
     // TODO: Save the token in your database along with the user's email and an expiration time
     const result = await pool.query("SELECT id FROM users WHERE email = $1", [
