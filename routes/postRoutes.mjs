@@ -6,36 +6,97 @@ import bodyParser from "body-parser";
 import jwt from "jsonwebtoken";
 import { pool } from "../db/db.mjs";
 import bcrypt from "bcrypt";
+import nodemailer from "nodemailer";
+import { getNextEmployeeNumber } from "../util/helpers.mjs";
 
 const router = express.Router();
 const saltRounds = 10; // Number of salt rounds
 
+// Configure your email transporter
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOST,
+  port: process.env.EMAIL_PORT,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
+
 router.post("/login", async (req, res) => {
-  console.log(req.body);
-  const query = "SELECT * FROM users WHERE email = $1";
-  const user = await pool.query(query, [req.body.email]);
-  if (user.rows.length === 0) {
-    res.json({ message: "user does not exist", status: 404 });
-  }
-  const isMatch = await bcrypt.compare(
-    req.body.password,
-    user.rows[0].password_hash
-  );
-  console.log(isMatch);
-  if (!isMatch) {
-    res.json({ message: "incorrect Password", status: 401 });
-  }
-  if (isMatch) {
+  try {
+    const { email, password } = req.body;
+
+    // Step 1: Query the user by email
+    const query = "SELECT * FROM users WHERE email = $1";
+    const userResult = await pool.query(query, [email]);
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: "User does not exist" });
+    }
+
+    const user = userResult.rows[0];
+
+    // Step 2: Check if the submitted password matches the registration_pass
+    const isRegistrationPassMatch = await bcrypt.compare(
+      password,
+      user.registration_pass || ""
+    );
+
+    if (isRegistrationPassMatch) {
+      return res.status(200).json({
+        message: "Please reset your Registration Password, Redirecting...",
+        status: 200,
+      });
+    }
+
+    // Step 3: Check if the submitted password matches the user's current password (password_hash)
+    const isPasswordMatch = await bcrypt.compare(password, user.password_hash);
+
+    if (!isPasswordMatch) {
+      return res
+        .status(401)
+        .json({ message: "Incorrect Password", status: 401 });
+    }
+
+    // Step 4: Query the employees table using the employee_id from the users table
+    const employeeQuery =
+      "SELECT first_name, last_name FROM employees WHERE id = $1";
+    const employeeResult = await pool.query(employeeQuery, [user.employee_id]);
+
+    if (employeeResult.rows.length === 0) {
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
+    const employee = employeeResult.rows[0];
+    const name = `${employee.first_name} ${employee.last_name}`;
+    const nextEmployeeNo = await getNextEmployeeNumber();
+    console.log("Next Employee", nextEmployeeNo);
+    // Step 5: If the password matches, generate a JWT token and send it in the response
     const token = jwt.sign(
       {
-        user: user.rows,
-        role: user.rows[0].role,
+        user: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          name: name, // Include employee's full name
+          nextEmployeeNo: nextEmployeeNo,
+        },
       },
       process.env.SECRET_KEY,
       { expiresIn: "1h" }
     );
 
-    res.json({ message: "logged in", token: token });
+    return res.status(200).json({
+      message: "Logged in successfully",
+      token: token,
+      name: name, // Send the full name in the response
+    });
+  } catch (error) {
+    console.error("Error during login:", error);
+    return res.status(500).json({
+      message: "An error occurred during login",
+      error: error.message,
+    });
   }
 });
 
@@ -134,58 +195,79 @@ router.post("/employeedash", async (req, res) => {
     async function (err, foundUser) {
       if (err) {
         if (err.message === "jwt expired") {
-          res.json({ message: "token expired" });
+          return res.json({ message: "token expired" });
+        } else {
+          return res.status(500).json({ message: "Invalid token" });
         }
       }
-      console.log(foundUser);
+
       if (foundUser) {
-        const result = await pool.query(
-          `
-                SELECT
-              e.id AS employee_id,
-              CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
-              e.Employee_number,
-              e.position,
-              e.department,
-              DATE(e.hire_date) AS hire_date,
-              p.month,
-              p.basic_salary,
-              p.house_allowance,
-              p.transport_allowance,
-              p.other_allowances,
-              p.overtime,
-              p.gross_pay,
-              p.nssf_tier_i,
-              p.nssf_tier_ii,
-              p.nhif,
-              p.housing_levy,
-              p.taxable_income,
-              p.paye,
-              p.personal_relief,
-              p.insurance_relief,
-              p.net_pay,
-              p.other_deductions,
-              -- Leave balance details
-              lb.sick_leave_balance,
-              lb.annual_leave_balance,
-              lb.sick_leave_used,
-              lb.maternity_leave_entitlement,
-              lb.paternity_leave_entitlement,
-              lb.compassionate_leave_entitlement
-          FROM payroll p
-          JOIN employees e ON p.employee_id = e.id
-          LEFT JOIN leave_balances lb ON e.id = lb.employee_id  -- Assuming you have a leave_balances table
-          WHERE
-              e.id = $1  -- Example employee ID filter
-          ORDER BY
-              p.month DESC;
-                  `,
-          [foundUser.user[0].employee_id]
-        );
-        console.log(result.rows);
-        res.json({
-          results: result.rows,
-        });
+        try {
+          // Step 1: Fetch employee_id from the users table
+          const userResult = await pool.query(
+            `SELECT employee_id FROM users WHERE id = $1`,
+            [foundUser.user.id]
+          );
+
+          if (userResult.rows.length === 0) {
+            return res.status(404).json({ message: "User not found" });
+          }
+
+          const employeeId = userResult.rows[0].employee_id;
+
+          // Step 2: Use employee_id to fetch employee's payroll and leave balance details
+          const result = await pool.query(
+            `
+              SELECT
+                e.id AS employee_id,
+                CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
+                e.Employee_number,
+                e.position,
+                e.department,
+                DATE(e.hire_date) AS hire_date,
+                p.month,
+                p.basic_salary,
+                p.house_allowance,
+                p.transport_allowance,
+                p.other_allowances,
+                p.overtime,
+                p.gross_pay,
+                p.nssf_tier_i,
+                p.nssf_tier_ii,
+                p.nhif,
+                p.housing_levy,
+                p.taxable_income,
+                p.paye,
+                p.personal_relief,
+                p.insurance_relief,
+                p.net_pay,
+                p.other_deductions,
+                lb.sick_leave_balance,
+                lb.annual_leave_balance,
+                lb.sick_leave_used,
+                lb.maternity_leave_entitlement,
+                lb.paternity_leave_entitlement,
+                lb.compassionate_leave_entitlement
+              FROM employees e
+              LEFT JOIN payroll p ON e.id = p.employee_id
+              LEFT JOIN leave_balances lb ON e.id = lb.employee_id
+              WHERE e.id = $1
+              ORDER BY p.month DESC;
+            `,
+            [employeeId]
+          );
+
+          console.log(result.rows);
+          res.json({
+            results: result.rows,
+          });
+        } catch (error) {
+          console.error("Error fetching data:", error);
+          res.status(500).json({
+            message: "An error occurred while fetching the data",
+            error: error.message,
+          });
+        }
       }
     }
   );
@@ -246,29 +328,52 @@ router.post("/profile", async (req, res) => {
       async function (err, foundUser) {
         if (err) {
           if (err.message === "jwt expired") {
-            res.json({ message: "token expired" });
+            return res.json({ message: "token expired" });
+          } else {
+            return res.status(500).json({ message: "Invalid token" });
           }
         }
+
         if (foundUser) {
-          const result = await pool.query(
-            `
-             SELECT * FROM employees where id = $1;
-            `,
-            [foundUser.user[0].employee_id]
+          // Step 1: Fetch employee_id from the users table
+          const userResult = await pool.query(
+            `SELECT employee_id FROM users WHERE id = $1`,
+            [foundUser.user.id]
           );
 
+          if (userResult.rows.length === 0) {
+            return res.status(404).json({ message: "User not found" });
+          }
+
+          const employeeId = userResult.rows[0].employee_id;
+
+          // Step 2: Use employee_id to fetch employee's profile data
+          const result = await pool.query(
+            `
+              SELECT * FROM employees WHERE id = $1;
+            `,
+            [employeeId]
+          );
+
+          if (result.rows.length === 0) {
+            return res.status(404).json({ message: "Employee not found" });
+          }
+          console.log(result.rows[0]);
           res.json({
-            result: result.rows,
+            result: result.rows[0], // Return the first row of the result
+            email: foundUser.user.email,
           });
         }
       }
     );
   } catch (err) {
-    console.log("Error", err);
+    console.error("Error", err);
+    res.status(500).json({ message: "An error occurred", error: err.message });
   }
 });
 
 router.post("/updateprofile", async (req, res) => {
+  console.log(req.body);
   try {
     jwt.verify(
       req.body.token,
@@ -276,42 +381,54 @@ router.post("/updateprofile", async (req, res) => {
       async function (err, foundUser) {
         if (err) {
           if (err.message === "jwt expired") {
-            res.json({ message: "token expired" });
+            return res.json({ message: "token expired" });
+          } else {
+            return res.status(500).json({ message: "Invalid token" });
           }
         }
+
         if (foundUser) {
+          // Step 1: Fetch employee_id from the users table
+          const userResult = await pool.query(
+            `SELECT employee_id FROM users WHERE id = $1`,
+            [foundUser.user.id]
+          );
+
+          if (userResult.rows.length === 0) {
+            return res.status(404).json({ message: "User not found" });
+          }
+
+          const employeeId = userResult.rows[0].employee_id;
+          console.log("iiiiid", employeeId);
+          // Step 2: Update employee's profile data
           const result = await pool.query(
             `
-             UPDATE employees
-             SET
-             first_name = SPLIT_PART($1, ' ', 1),
-               last_name = SPLIT_PART($1, ' ', 2),
-             phone_number = $2,
-             location = $3
-             WHERE id = $4;
-  
+              UPDATE employees
+              SET
+                first_name = SPLIT_PART($1, ' ', 1),
+                last_name = SPLIT_PART($1, ' ', 2),
+                phone_number = $2,
+                location = $3
+              WHERE id = $4;
             `,
-            [
-              req.body.name,
-              req.body.phoneNumber,
-              req.body.location,
-              foundUser.user[0].employee_id,
-            ]
+            [req.body.name, req.body.phoneNumber, req.body.location, employeeId]
           );
-          const updateUser = await pool.query(
-            `
-             SELECT * FROM employees where id = $1;
-            `,
-            [foundUser.user[0].employee_id]
-          );
-          console.log(updateUser.rows);
 
-          res.json({ message: "Profile updated", user: updateUser.rows });
+          // Step 3: Fetch the updated employee data
+          const updateUser = await pool.query(
+            `SELECT * FROM employees WHERE id = $1;`,
+            [employeeId]
+          );
+
+          console.log("uuuuuser", updateUser.rows[0]);
+
+          res.json({ message: "Profile updated", user: updateUser.rows[0] });
         }
       }
     );
   } catch (err) {
-    console.log("Error", err);
+    console.error("Error", err);
+    res.status(500).json({ message: "An error occurred", error: err.message });
   }
 });
 
@@ -554,6 +671,86 @@ router.post("/requestLeave", async (req, res) => {
   } catch (err) {
     console.error("Error updating leave:", err);
     res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// Route to add a new user
+router.post("/adduser", async (req, res) => {
+  try {
+    const { email, employeeId, name, role, password, company } = req.body;
+
+    // Step 1: Get the employee's id from the employees table using the employeeId
+    const employeeCheckQuery =
+      "SELECT id FROM employees WHERE employee_number = $1"; // Assuming employee_number is a column in employees table
+    const employeeResult = await pool.query(employeeCheckQuery, [employeeId]);
+
+    // Check if the employee exists
+    if (employeeResult.rows.length === 0) {
+      return res.status(404).json({
+        message: "Employee with the provided employeeId does not exist",
+      });
+    }
+
+    const employeeDbId = employeeResult.rows[0].id; // The employee's ID in the database
+
+    // Step 2: Check if a user with the same employee id and email already exists in the users table
+    const userCheckQuery =
+      "SELECT * FROM users WHERE email = $1 AND employee_id = $2";
+    const userCheckResult = await pool.query(userCheckQuery, [
+      email,
+      employeeDbId,
+    ]);
+
+    if (userCheckResult.rows.length > 0) {
+      return res.status(409).json({
+        message: "A user with this email and employeeId already exists",
+      });
+    }
+
+    // Step 3: Hash the password before inserting the user
+    const hashedPassword = await bcrypt.hash(password, 10); // Hash the password with salt rounds of 10
+
+    // Step 4: Insert the new user into the users table
+    const insertUserQuery = `
+      INSERT INTO users (email, employee_id, role, registration_pass, company)
+      VALUES ($1, $2, $3, $4, $5) RETURNING *`;
+
+    const newUser = await pool.query(insertUserQuery, [
+      email,
+      employeeDbId,
+      role,
+      hashedPassword,
+      company,
+    ]);
+
+    // Step 5: Send an email with the password to the user's email
+    const mailOptions = {
+      from: "hrms.livecrib@gmail.com",
+      to: email,
+      subject: "Welcome to HRMS - Your Account Details",
+      html: `
+        <p>Dear ${name},</p>
+        <p>Your account has been successfully created in the HRMS system.</p>
+        <p>Your login details are as follows:</p>
+        <p>Email: ${email}</p>
+        <p>Password: ${password}</p>
+        <p>Please login and change your password as soon as possible.</p>
+        <p>If you have any questions, feel free to reach out.</p>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.status(201).json({
+      message: "User added successfully and email sent",
+      user: newUser.rows[0], // Return the newly created user
+    });
+  } catch (error) {
+    console.error("Error adding user:", error);
+    res.status(500).json({
+      message: "An error occurred while adding the user",
+      error: error.message,
+    });
   }
 });
 

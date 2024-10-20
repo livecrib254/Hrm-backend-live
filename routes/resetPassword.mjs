@@ -3,6 +3,9 @@ dotenv.config();
 import express from "express";
 import nodemailer from "nodemailer";
 import crypto from "crypto";
+import jwt from "jsonwebtoken";
+import { pool } from "../db/db.mjs";
+import bcrypt from "bcrypt";
 
 const router = express.Router();
 
@@ -16,18 +19,33 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-router.post("/reset-password", async (req, res) => {
+router.post("/forgotpassword", async (req, res) => {
   const { email } = req.body;
-  console.log(req.body);
 
   try {
-    // Generate a unique token
-    const token = crypto.randomBytes(20).toString("hex");
-    console.log(token);
     // TODO: Save the token in your database along with the user's email and an expiration time
+    const result = await pool.query("SELECT id FROM users WHERE email = $1", [
+      email,
+    ]);
 
-    // Create reset password link
-    const resetLink = `https://your-hrms-frontend.com/reset-password?token=${token}`;
+    if (result.rows.length === 0)
+      return res.status(404).json({ message: "User not found" });
+
+    const userId = result.rows[0].id;
+
+    const expiresAt = new Date(Date.now() + 3600000).toISOString(); // 1 hour from now
+
+    // Generate a unique token
+    const token = jwt.sign({ userId }, process.env.SECRET_KEY, {
+      expiresIn: "1h",
+    });
+
+    await pool.query(
+      "UPDATE users set resetPasswordToken = $1, reset_password_expires = $2 where id = $3",
+      [token, expiresAt, userId]
+    );
+
+    const resetLink = `http://localhost:5173/forgotpassword?token=${token}`;
 
     // Send email
     await transporter.sendMail({
@@ -48,6 +66,38 @@ router.post("/reset-password", async (req, res) => {
     res
       .status(500)
       .json({ error: "An error occurred while processing your request." });
+  }
+});
+
+// Handle password reset
+router.post("/resetpassword", async (req, res) => {
+  const { token, newPassword } = req.body;
+  console.log(token, newPassword);
+  try {
+    jwt.verify(token, process.env.SECRET_KEY, async function (err, foundUser) {
+      if (err) {
+        if (err.message === "jwt expired") {
+          res.json({ message: "token expired" });
+        }
+      }
+      if (foundUser) {
+        console.log(foundUser.userId);
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+        await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [
+          hashedPassword,
+          foundUser.userId,
+        ]);
+
+        res.status(200).json({ message: "Password reset successful" });
+      }
+    });
+  } catch (error) {
+    if (error.name === "TokenExpiredError") {
+      return res.status(400).json({ message: "Token expired" });
+    }
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
   }
 });
 
