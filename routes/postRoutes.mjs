@@ -59,8 +59,7 @@ router.post("/login", async (req, res) => {
     }
 
     // Step 4: Query the employees table using the employee_id from the users table
-    const employeeQuery =
-      "SELECT first_name, last_name FROM employees WHERE id = $1";
+    const employeeQuery = "SELECT * FROM employees WHERE id = $1";
     const employeeResult = await pool.query(employeeQuery, [user.employee_id]);
 
     if (employeeResult.rows.length === 0) {
@@ -70,7 +69,7 @@ router.post("/login", async (req, res) => {
     const employee = employeeResult.rows[0];
     const name = `${employee.first_name} ${employee.last_name}`;
     const nextEmployeeNo = await getNextEmployeeNumber();
-    console.log("Next Employee", nextEmployeeNo);
+    //console.log("Employee>>", employee);
     // Step 5: If the password matches, generate a JWT token and send it in the response
     const token = jwt.sign(
       {
@@ -78,6 +77,7 @@ router.post("/login", async (req, res) => {
           id: user.id,
           email: user.email,
           role: user.role,
+          employee: employee,
           name: name, // Include employee's full name
           nextEmployeeNo: nextEmployeeNo,
         },
