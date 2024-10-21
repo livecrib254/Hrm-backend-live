@@ -45,7 +45,7 @@ router.post("/forgotpassword", async (req, res) => {
       [token, expiresAt, userId]
     );
 
-    const resetLink = `http://localhost:5173/forgotpassword?token=${token}`;
+    const resetLink = `https://hrmlive.livecrib.pro/forgotpassword?token=${token}`;
 
     // Send email
     await transporter.sendMail({
