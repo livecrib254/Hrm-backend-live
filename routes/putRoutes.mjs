@@ -154,4 +154,80 @@ router.put("/approve/:id", async (req, res) => {
   }
 });
 
+// PUT route to update payroll_info details
+router.put("/updatepayroll", async (req, res) => {
+  try {
+    const {
+      id,
+      employee_id,
+      basic_salary,
+      house_allowance,
+      transport_allowance,
+      other_allowances,
+      other_deductions,
+      overtime,
+      bonus,
+      personal_relief,
+      insurance_relief,
+      helb_deduction,
+      sacco_deduction,
+    } = req.body;
+
+    // Ensure required fields are present
+    if (!id || !employee_id || !basic_salary) {
+      return res.status(400).json({ message: "Required fields are missing" });
+    }
+
+    // Update payroll_info details in the database
+    const query = `
+          UPDATE payroll_info
+          SET
+              employee_id = $1,
+              basic_salary = $2,
+              house_allowance = $3,
+              transport_allowance = $4,
+              other_allowances = $5,
+              other_deductions = $6,
+              overtime = $7,
+              bonus = $8,
+              personal_relief = $9,
+              insurance_relief = $10,
+              helb_deduction = $11,
+              sacco_deduction = $12,
+              updated_at = NOW()
+          WHERE id = $13
+          RETURNING *;
+      `;
+
+    const values = [
+      employee_id,
+      basic_salary,
+      house_allowance,
+      transport_allowance,
+      other_allowances,
+      other_deductions,
+      overtime,
+      bonus,
+      personal_relief,
+      insurance_relief,
+      helb_deduction,
+      sacco_deduction,
+      id,
+    ];
+
+    const result = await pool.query(query, values);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "Payroll record not found" });
+    }
+
+    res
+      .status(200)
+      .json({ message: "Payroll updated successfully", data: result.rows[0] });
+  } catch (error) {
+    console.error("Error updating payroll:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 export default router;
