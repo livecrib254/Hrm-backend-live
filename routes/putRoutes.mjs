@@ -230,4 +230,88 @@ router.put("/updatepayroll", async (req, res) => {
   }
 });
 
+// PUT route to update recognition history
+router.put('/recognition', async (req, res) => {
+  const {
+    recipientID,
+    recognitionType,
+    category,
+    message,
+    impact,
+    recognition_date,
+    likes,
+    tags
+} = req.body;
+ console.log( recipientID,
+  recognitionType,
+  category,
+  message,
+  impact,
+  recognition_date,
+  likes,
+  tags)
+
+try {
+  const query = `
+        select id from  employees 
+        WHERE  employee_number = $1;
+      `;
+    const query1 = `
+        INSERT INTO recognition_history (recipient_id, recognition_type, category, message, impact, recognition_date, likes, tags)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING *;
+    `;
+
+   
+    const result = await pool.query(query, [recipientID]);
+    if (result.rows[0].id) {
+      const values = [
+        result.rows[0].id,
+        recognitionType,
+          category,
+          message,
+          impact,
+          recognition_date,
+          likes,
+          tags
+      ];
+  
+     
+    const result1 = await pool.query(query1, values);
+    res.status(201).json(result1.rows[0]);
+    }
+
+
+} catch (error) {
+    console.error('Error updating recognition history:', error);
+    res.status(500).send('Server error');
+}
+});
+
+router.put('/recognition/:id/like', async (req, res) => {
+  const recognitionId = req.params.id;
+
+  try {
+    // Increment the likes for the given recognition ID
+    const query = `
+      UPDATE recognition_history
+      SET likes = likes + 1
+      WHERE id = $1
+      RETURNING *;
+    `;
+    const result = await pool.query(query, [recognitionId]);
+
+    // Check if the recognition entry exists
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Recognition not found' });
+    }
+
+    // Return the updated recognition entry
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating likes:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 export default router;

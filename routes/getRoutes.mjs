@@ -290,4 +290,31 @@ router.get("/employees", async (req, res) => {
   }
 });
 
+// Fetch all recognition records
+router.get("/recognitions", async (req, res) => {
+  try {
+    const query = `
+    SELECT 
+      rh.*, 
+      e.first_name || ' ' || e.last_name AS recipient_name
+    FROM recognition_history rh
+    JOIN employees e ON rh.recipient_id = e.id
+  `;
+    // Query to fetch all records from the recognition_history table
+    const result = await pool.query(query);
+
+    // If no records are found, return a 404
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'No recognition history found' });
+    }
+
+    // Send the data back as JSON
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching recognition history:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+
 export default router;
