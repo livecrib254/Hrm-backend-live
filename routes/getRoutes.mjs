@@ -230,8 +230,18 @@ router.get("/attendance", async (req, res) => {
 
 router.get("/warnings", async (req, res) => {
   try {
-    const result = await pool.query(`SELECT 
-      warnings.*, -- Select all columns from the payroll table
+    const result = await pool.query(`SELECT
+       warnings.id,
+    warnings.employee_id,
+    warnings.type_id,
+    warnings.description,
+    warnings.issue_date,
+    warnings.expiry_date,
+    warnings.attachments,
+    warnings.issuer_id,
+    warnings.status,
+    warnings.created_at,
+    warnings.updated_at,
       employees.first_name || ' ' || employees.last_name AS name, -- Concatenate first and last name as 'name'
       employees.department, 
       employees.position,

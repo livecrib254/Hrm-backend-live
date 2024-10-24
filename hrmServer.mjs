@@ -82,7 +82,7 @@ app.put("/warningsupload", upload.array("file"), async (req, res) => {
     const files = req.files;
     let filePaths = [];
     const { employeeId, employeeName, description, date } = req.body;
-
+      console.log(employeeId, employeeName, description, date)
     if (files) {
       filePaths = files.map((file) => {
         return `uploads/${file.filename}`;
@@ -95,11 +95,11 @@ app.put("/warningsupload", upload.array("file"), async (req, res) => {
       // return res.status(400).json({ message: "No files uploaded." });
     }
     const id = await pool.query(
-      "SELECT id FROM employees WHERE Employee_number = $1",
+      "SELECT id FROM employees WHERE employee_number = $1",
       [employeeId]
     );
 
-    console.log(id.rows[0].id);
+    console.log(id);
 
     if (id.rows[0].id) {
       // Create the warning object
@@ -113,7 +113,7 @@ app.put("/warningsupload", upload.array("file"), async (req, res) => {
 
       // Insert into PostgreSQL (example using pg library)
       const query = `
-      INSERT INTO warnings (employee_id, description, date, attachments)
+      INSERT INTO warnings (employee_id, description, issue_date, attachments)
       VALUES ($1, $2, $3, $4)
       RETURNING *;
     `;
