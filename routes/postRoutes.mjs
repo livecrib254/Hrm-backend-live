@@ -642,9 +642,11 @@ router.post("/requestLeave", async (req, res) => {
           start_date,
           end_date,
           total_days,
-          status
+          status,
+          covering_employee_number
+          
         ) VALUES (
-          $1, $2, $3, $4, $5, $6
+          $1, $2, $3, $4, $5, $6, $7
         )
         RETURNING *;
       `;
@@ -659,6 +661,7 @@ router.post("/requestLeave", async (req, res) => {
         req.body.endDate,
         req.body.days,
         "pending",
+        req.body.coveringEmployeeNumber,
       ]);
 
       console.log(result2.rows);

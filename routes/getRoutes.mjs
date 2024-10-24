@@ -24,6 +24,26 @@ router.get("/", async (req, res) => {
   res.json("Hello World");
 });
 
+router.get('/employees/:employeeNumber', async (req, res) => {
+  const { employeeNumber } = req.params;
+     console.log(employeeNumber)
+  try {
+    const query = "SELECT first_name || ' ' || last_name AS name FROM employees WHERE employee_number = $1;"
+    const result = await pool.query( query,
+      [employeeNumber]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Employee not found' });
+    }
+
+    res.json({ name: result.rows[0].name });
+  } catch (error) {
+    console.error('Error querying the database:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 router.get("/adminsettings", async (req, res) => {
   try {
     const query = `SELECT 
