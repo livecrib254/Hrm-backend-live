@@ -41,9 +41,11 @@ router.delete("/deleteuser", async (req, res) => {
     ]);
 
     if (result.rowCount > 0) {
-      res.json({ message: "User deleted successfully" });
+      console.log("user deleted")
+     return  res.json({ message: "User deleted successfully" });
     } else {
-      res.status(404).json({ message: "User not found" });
+      console.log("delete failed")
+    return  res.status(404).json({ message: "User not found" });
     }
   } catch (error) {
     console.error("Error deleting user:", error);
