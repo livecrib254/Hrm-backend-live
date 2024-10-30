@@ -137,7 +137,12 @@ router.post("/dashboardData", async (req, res) => {
           "SELECT COUNT(*) FROM employees"
         );
         const totalPayroll = await pool.query(
-          "SELECT SUM(gross_pay) FROM payroll"
+          `SELECT SUM(gross_pay) AS sum
+FROM (
+    SELECT DISTINCT ON (employee_id) employee_id, gross_pay
+    FROM payroll
+    ORDER BY employee_id, month DESC, created_at DESC  
+) AS monthly_salaries`
         );
 
         const leaveRequests = await pool.query(
@@ -149,33 +154,53 @@ router.post("/dashboardData", async (req, res) => {
           "SELECT COUNT(*) FROM staff_requisitions "
         );
         const result = await pool.query(`
-            SELECT 
-      TO_CHAR(p.month, 'Mon') AS month,  -- Adjust the formatting as needed
-      SUM(p.basic_salary) AS payroll,
-      COUNT(l.id) AS leaves,
-      COUNT(d.id) AS disciplinary,
-      COUNT(r.id) AS requisitions
-  FROM 
-      (SELECT 
-          date_trunc('month', month) AS month, 
-          SUM(basic_salary) AS basic_salary
-       FROM 
-          payroll
-       GROUP BY 
-          date_trunc('month', month)) p
-  LEFT JOIN 
-      leave_requests l ON date_trunc('month', l.start_date) = p.month
-  LEFT JOIN 
-      disciplinary_cases d ON date_trunc('month', d.action_date) = p.month
-  LEFT JOIN 
-      staff_requisitions r ON date_trunc('month', r.requested_date) = p.month
-  GROUP BY 
-      p.month
-  ORDER BY 
-      p.month;
+           WITH monthly_payroll AS (
+    SELECT 
+        date_trunc('month', month) AS month,
+        SUM(basic_salary) AS basic_salary
+    FROM payroll
+    GROUP BY date_trunc('month', month)
+),
+monthly_leaves AS (
+    SELECT 
+        date_trunc('month', start_date) AS month,
+        COUNT(id) AS leaves
+    FROM leave_requests
+    GROUP BY date_trunc('month', start_date)
+),
+monthly_disciplinary AS (
+    SELECT 
+        date_trunc('month', action_date) AS month,
+        COUNT(id) AS disciplinary
+    FROM disciplinary_cases
+    GROUP BY date_trunc('month', action_date)
+),
+monthly_requisitions AS (
+    SELECT 
+        date_trunc('month', requested_date) AS month,
+        COUNT(id) AS requisitions
+    FROM staff_requisitions
+    GROUP BY date_trunc('month', requested_date)
+)
+SELECT 
+    TO_CHAR(p.month, 'Mon') AS month, 
+    p.basic_salary AS payroll,
+    COALESCE(l.leaves, 0) AS leaves,
+    COALESCE(d.disciplinary, 0) AS disciplinary,
+    COALESCE(r.requisitions, 0) AS requisitions
+FROM 
+    monthly_payroll p
+LEFT JOIN 
+    monthly_leaves l ON l.month = p.month
+LEFT JOIN 
+    monthly_disciplinary d ON d.month = p.month
+LEFT JOIN 
+    monthly_requisitions r ON r.month = p.month
+ORDER BY 
+    p.month;
   
           `);
-
+           console.log(totalPayroll.rows[0])
         res.json({
           totalEmployees: totalEmployees.rows[0].count,
           totalPayroll: totalPayroll.rows[0].sum,

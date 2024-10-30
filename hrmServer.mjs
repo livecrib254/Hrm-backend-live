@@ -10,6 +10,7 @@ import getRoutes from "./routes/getRoutes.mjs";
 import postRoutes from "./routes/postRoutes.mjs";
 import deleteRoutes from "./routes/deleteRoutes.mjs";
 import putRoutes from "./routes/putRoutes.mjs";
+import processbulkpayroll from "./routes/payroll.mjs";
 import multer from "multer";
 import fs from "fs";
 import path from "path";
@@ -32,6 +33,7 @@ app.use("/api", postRoutes);
 app.use("/api", deleteRoutes);
 app.use("/api", putRoutes);
 app.use("/api", resetPassword);
+app.use("/api", processbulkpayroll);
 
 // Ensure uploads directory exists
 const uploadDir = path.join(__dirname, ".", "uploads");
