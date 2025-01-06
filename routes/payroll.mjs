@@ -26,7 +26,7 @@ const transporter = nodemailer.createTransport({
 // Helper function to get the current month
 //const getCurrentMonth = () => new Date().toISOString().slice(0, 7);
 const getCurrentMonth = () => {
-    const currentYear = new Date().getFullYear();
+    const currentYear =2024 //new Date().getFullYear();
     return `${currentYear}-01`; // Sets the month to June
   };
 
