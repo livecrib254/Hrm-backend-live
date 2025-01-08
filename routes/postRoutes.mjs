@@ -137,75 +137,88 @@ router.post("/dashboardData", async (req, res) => {
           "SELECT COUNT(*) FROM employees"
         );
         const totalPayroll = await pool.query(
-          `SELECT SUM(gross_pay) AS sum
-FROM (
-    SELECT DISTINCT ON (employee_id) employee_id, gross_pay
-    FROM payroll
-    ORDER BY employee_id, month DESC, created_at DESC  
-) AS monthly_salaries`
+          `SELECT DATE_PART('year', month) AS year, SUM(gross_pay) AS total_gross_pay
+           FROM (
+               SELECT DISTINCT ON (employee_id) employee_id, gross_pay, month
+               FROM payroll
+               ORDER BY employee_id, month DESC, created_at DESC  
+           ) AS monthly_salaries
+           GROUP BY DATE_PART('year', month)
+           ORDER BY year`
         );
 
         const leaveRequests = await pool.query(
-          "SELECT COUNT(*) FROM leave_requests WHERE status = $1",
+          `SELECT DATE_PART('year', start_date) AS year, COUNT(*) AS pending_leaves
+           FROM leave_requests
+           WHERE status = $1
+           GROUP BY DATE_PART('year', start_date)
+           ORDER BY year`,
           ["pending"]
         );
 
         const openRequisitions = await pool.query(
-          "SELECT COUNT(*) FROM staff_requisitions "
+          `SELECT DATE_PART('year', requested_date) AS year, COUNT(*) AS requisitions_count
+           FROM staff_requisitions
+           GROUP BY DATE_PART('year', requested_date)
+           ORDER BY year`
         );
         const result = await pool.query(`
-           WITH monthly_payroll AS (
-    SELECT 
-        date_trunc('month', month) AS month,
-        SUM(basic_salary) AS basic_salary
-    FROM payroll
-    GROUP BY date_trunc('month', month)
-),
-monthly_leaves AS (
-    SELECT 
-        date_trunc('month', start_date) AS month,
-        COUNT(id) AS leaves
-    FROM leave_requests
-    GROUP BY date_trunc('month', start_date)
-),
-monthly_disciplinary AS (
-    SELECT 
-        date_trunc('month', action_date) AS month,
-        COUNT(id) AS disciplinary
-    FROM disciplinary_cases
-    GROUP BY date_trunc('month', action_date)
-),
-monthly_requisitions AS (
-    SELECT 
-        date_trunc('month', requested_date) AS month,
-        COUNT(id) AS requisitions
-    FROM staff_requisitions
-    GROUP BY date_trunc('month', requested_date)
-)
-SELECT 
-    TO_CHAR(p.month, 'Mon') AS month, 
-    p.basic_salary AS payroll,
-    COALESCE(l.leaves, 0) AS leaves,
-    COALESCE(d.disciplinary, 0) AS disciplinary,
-    COALESCE(r.requisitions, 0) AS requisitions
-FROM 
-    monthly_payroll p
-LEFT JOIN 
-    monthly_leaves l ON l.month = p.month
-LEFT JOIN 
-    monthly_disciplinary d ON d.month = p.month
-LEFT JOIN 
-    monthly_requisitions r ON r.month = p.month
-ORDER BY 
-    p.month;
-  
-          `);
-           console.log(totalPayroll.rows[0])
+          WITH monthly_payroll AS (
+              SELECT 
+                  date_trunc('month', month) AS month,
+                  EXTRACT(YEAR FROM month) AS year,
+                  SUM(basic_salary) AS basic_salary
+              FROM payroll
+              GROUP BY date_trunc('month', month), EXTRACT(YEAR FROM month)
+          ),
+          monthly_leaves AS (
+              SELECT 
+                  date_trunc('month', start_date) AS month,
+                  EXTRACT(YEAR FROM start_date) AS year,
+                  COUNT(id) AS leaves
+              FROM leave_requests
+              GROUP BY date_trunc('month', start_date), EXTRACT(YEAR FROM start_date)
+          ),
+          monthly_disciplinary AS (
+              SELECT 
+                  date_trunc('month', action_date) AS month,
+                  EXTRACT(YEAR FROM action_date) AS year,
+                  COUNT(id) AS disciplinary
+              FROM disciplinary_cases
+              GROUP BY date_trunc('month', action_date), EXTRACT(YEAR FROM action_date)
+          ),
+          monthly_requisitions AS (
+              SELECT 
+                  date_trunc('month', requested_date) AS month,
+                  EXTRACT(YEAR FROM requested_date) AS year,
+                  COUNT(id) AS requisitions
+              FROM staff_requisitions
+              GROUP BY date_trunc('month', requested_date), EXTRACT(YEAR FROM requested_date)
+          )
+          SELECT 
+              TO_CHAR(p.month, 'Mon') AS month, 
+              p.year AS year,
+              p.basic_salary AS payroll,
+              COALESCE(l.leaves, 0) AS leaves,
+              COALESCE(d.disciplinary, 0) AS disciplinary,
+              COALESCE(r.requisitions, 0) AS requisitions
+          FROM 
+              monthly_payroll p
+          LEFT JOIN 
+              monthly_leaves l ON l.month = p.month AND l.year = p.year
+          LEFT JOIN 
+              monthly_disciplinary d ON d.month = p.month AND d.year = p.year
+          LEFT JOIN 
+              monthly_requisitions r ON r.month = p.month AND r.year = p.year
+          ORDER BY 
+              p.year, p.month;
+        `);
+           console.log(totalPayroll)
         res.json({
           totalEmployees: totalEmployees.rows[0].count,
-          totalPayroll: totalPayroll.rows[0].sum,
-          leaveRequests: leaveRequests.rows[0].count,
-          openRequisitions: openRequisitions.rows[0].count,
+          totalPayroll: totalPayroll.rows,
+          leaveRequests: leaveRequests.rows,
+          openRequisitions: openRequisitions.rows,
           results: result.rows,
         });
       }
@@ -246,11 +259,12 @@ router.post("/employeedash", async (req, res) => {
               SELECT
                 e.id AS employee_id,
                 CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
-                e.Employee_number,
+                e.employee_number,
                 e.position,
                 e.department,
                 DATE(e.hire_date) AS hire_date,
-                p.month,
+                COALESCE(date_part('year', p.month), lb.year) AS year, -- Use year from payroll if available, otherwise from leave_balances
+                COALESCE(TO_CHAR(p.month, 'Mon'), 'N/A') AS month,  -- Use month from payroll if available, otherwise 'N/A'
                 p.basic_salary,
                 p.house_allowance,
                 p.transport_allowance,
@@ -267,22 +281,33 @@ router.post("/employeedash", async (req, res) => {
                 p.insurance_relief,
                 p.net_pay,
                 p.other_deductions,
-                lb.sick_leave_balance,
+                lb.annual_leave_entitlement,
                 lb.annual_leave_balance,
+                lb.annual_leave_used,
+                lb.sick_leave_entitlement,
+                lb.sick_leave_balance,
                 lb.sick_leave_used,
                 lb.maternity_leave_entitlement,
+                lb.maternity_leave_used,
                 lb.paternity_leave_entitlement,
-                lb.compassionate_leave_entitlement
+                lb.paternity_leave_used,
+                lb.compassionate_leave_entitlement,
+                lb.compassionate_leave_used,
+                lb.created_at AS leave_balance_created_at,
+                lb.updated_at AS leave_balance_updated_at
               FROM employees e
-              LEFT JOIN payroll p ON e.id = p.employee_id
               LEFT JOIN leave_balances lb ON e.id = lb.employee_id
+              LEFT JOIN payroll p 
+                ON e.id = p.employee_id 
+                AND lb.year = date_part('year', p.month) -- Match payroll to leave balances by year
               WHERE e.id = $1
-              ORDER BY p.month DESC;
+              ORDER BY COALESCE(date_part('year', p.month), lb.year) DESC, p.month DESC NULLS LAST; -- Order by year, then month
             `,
             [employeeId]
           );
+          
+          
 
-          console.log(result.rows);
           res.json({
             results: result.rows,
           });
@@ -535,19 +560,24 @@ router.post("/discplinary", async (req, res) => {
 
 router.post("/payroll", async (req, res) => {
   try {
-    const result = await pool.query(`SELECT 
-      payroll.*, -- Select all columns from the payroll table
-      employees.first_name, 
-      employees.last_name, 
-      employees.position, 
-      employees.department
-  FROM 
-      payroll
-  JOIN 
-      employees 
-  ON 
-      payroll.employee_id = employees.id;
-  `);
+    const result = await pool.query(`
+      SELECT 
+          payroll.*, -- Select all columns from the payroll table
+          employees.first_name, 
+          employees.last_name, 
+          employees.position, 
+          employees.department,
+          date_part('year', payroll.month) AS year, -- Extract year from the payroll month
+          TO_CHAR(payroll.month, 'Mon') AS month  -- Extract the month as text
+      FROM 
+          payroll
+      JOIN 
+          employees 
+      ON 
+          payroll.employee_id = employees.id
+      ORDER BY 
+          date_part('year', payroll.month) DESC, payroll.month DESC; -- Order by year first, then month
+    `);
 
     console.log(result.rows);
 

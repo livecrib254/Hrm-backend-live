@@ -261,7 +261,35 @@ CREATE TABLE warnings (
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
--- Add triggers to update the 'updated_at' column
+                                                 -- First, create a table to track leave reset logs
+CREATE TABLE IF NOT EXISTS leave_reset_logs (
+    id SERIAL PRIMARY KEY,
+    reset_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    previous_year INTEGER,
+    new_year INTEGER,
+    employees_affected INTEGER,
+    status VARCHAR(50),
+    error_message TEXT,
+    details JSONB
+);
+
+                                                -- First, create a table to log monthly accruals
+CREATE TABLE IF NOT EXISTS leave_accrual_logs (
+    id SERIAL PRIMARY KEY,
+    accrual_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    month INTEGER,
+    year INTEGER,
+    employees_affected INTEGER,
+    accrual_rate NUMERIC(4,2),
+    status VARCHAR(50),
+    error_message TEXT,
+    details JSONB
+);
+
+                                                    -- FUNCTIONS AND TRIGGERS
+
+
+            -- Add triggers to update the 'updated_at' column
 CREATE OR REPLACE FUNCTION update_modified_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -294,7 +322,7 @@ CREATE TRIGGER update_warnings_modtime
     BEFORE UPDATE ON warnings
     FOR EACH ROW EXECUTE FUNCTION update_modified_column();
 
-                                                         -- Functions and Triggers
+                                                         
 
                                                      -- Function to set gender-based leave
 
@@ -550,3 +578,409 @@ FOR EACH ROW
 WHEN (NEW.status = 'approved')
 EXECUTE FUNCTION update_leave_balance();
 
+
+                                -- Enhanced reset function with logging and error handling
+
+CREATE OR REPLACE FUNCTION reset_annual_leave_balances()
+RETURNS void AS $$
+DECLARE
+    prev_year INTEGER;
+    curr_year INTEGER;
+    affected_count INTEGER;
+    log_details JSONB;
+    DEFAULT_SICK_LEAVE CONSTANT INTEGER := 30;        -- Company's default sick leave
+    DEFAULT_COMPASSIONATE_LEAVE CONSTANT INTEGER := 10; -- Company's default compassionate leave
+BEGIN
+    curr_year := EXTRACT(YEAR FROM CURRENT_DATE);
+    prev_year := curr_year - 1;
+    
+    -- Start transaction
+    BEGIN
+        -- Insert new leave balance records with default values
+        WITH inserted_records AS (
+            INSERT INTO leave_balances (
+                employee_id,
+                year,
+                annual_leave_used,
+                sick_leave_used,
+                annual_leave_adjustment,
+                sick_leave_adjustment,
+                maternity_leave_used,
+                paternity_leave_used,
+                compassionate_leave_used,
+                annual_leave_balance,
+                sick_leave_balance,                -- Added column
+                compassionate_leave_entitlement    -- Corrected column name
+            )
+            SELECT 
+                lb.employee_id,
+                curr_year,
+                0,                          -- Reset annual_leave_used
+                0,                          -- Reset sick_leave_used
+                0,                          -- Reset annual_leave_adjustment
+                0,                          -- Reset sick_leave_adjustment
+                0,                          -- Reset maternity_leave_used
+                0,                          -- Reset paternity_leave_used
+                0,                          -- Reset compassionate_leave_used
+                LEAST(COALESCE(lb.annual_leave_balance, 0), 5),  -- Carry forward max 5 days
+                DEFAULT_SICK_LEAVE,         -- Reset to default sick leave
+                DEFAULT_COMPASSIONATE_LEAVE -- Reset to default compassionate leave
+            FROM leave_balances lb
+            WHERE lb.year = prev_year
+            AND NOT EXISTS (
+                SELECT 1 
+                FROM leave_balances 
+                WHERE employee_id = lb.employee_id 
+                AND year = curr_year
+            )
+            RETURNING employee_id
+        )
+        SELECT COUNT(*) INTO affected_count FROM inserted_records;
+
+        -- Prepare log details with new balance information
+        log_details := jsonb_build_object(
+            'affected_employees', affected_count,
+            'max_carried_forward', 5,
+            'default_sick_leave', DEFAULT_SICK_LEAVE,
+            'default_compassionate_leave', DEFAULT_COMPASSIONATE_LEAVE,
+            'reset_timestamp', CURRENT_TIMESTAMP
+        );
+
+        -- Insert successful log entry
+        INSERT INTO leave_reset_logs (
+            previous_year,
+            new_year,
+            employees_affected,
+            status,
+            details
+        ) VALUES (
+            prev_year,
+            curr_year,
+            affected_count,
+            'SUCCESS',
+            log_details
+        );
+
+        -- Raise notice for monitoring
+        RAISE NOTICE 'Successfully reset leave balances for % employees with default balances', affected_count;
+
+    EXCEPTION WHEN OTHERS THEN
+        -- Log error
+        INSERT INTO leave_reset_logs (
+            previous_year,
+            new_year,
+            status,
+            error_message,
+            details
+        ) VALUES (
+            prev_year,
+            curr_year,
+            'ERROR',
+            SQLERRM,
+            jsonb_build_object(
+                'error_detail', SQLERRM,
+                'error_hint', SQLHINT,
+                'error_context', SQLCONTEXT,
+                'default_sick_leave', DEFAULT_SICK_LEAVE,
+                'default_compassionate_leave', DEFAULT_COMPASSIONATE_LEAVE
+            )
+        );
+        
+        -- Re-raise the error
+        RAISE EXCEPTION 'Failed to reset leave balances: %', SQLERRM;
+    END;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Install pg_cron extension (requires superuser privileges)
+-- CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+                           -- Schedule the reset job (after installing pg_cron)
+
+SELECT cron.schedule('reset-annual-leaves', '0 0 1 1 *', $$
+    SELECT reset_annual_leave_balances();
+$$);
+
+                            -- Function to view reset history
+
+CREATE OR REPLACE FUNCTION view_leave_reset_history(
+    start_date DATE DEFAULT CURRENT_DATE - INTERVAL '1 year',
+    end_date DATE DEFAULT CURRENT_DATE
+)
+RETURNS TABLE (
+    reset_date TIMESTAMP,
+    previous_year INTEGER,
+    new_year INTEGER,
+    employees_affected INTEGER,
+    status VARCHAR(50),
+    error_message TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        l.reset_date,
+        l.previous_year,
+        l.new_year,
+        l.employees_affected,
+        l.status,
+        l.error_message
+    FROM leave_reset_logs l
+    WHERE l.reset_date BETWEEN start_date AND end_date
+    ORDER BY l.reset_date DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+               -- Function to manually trigger reset (with safety checks)
+
+CREATE OR REPLACE FUNCTION manual_leave_reset(force_reset BOOLEAN DEFAULT FALSE)
+RETURNS TEXT AS $$
+DECLARE
+    last_reset_timestamp TIMESTAMP;
+    curr_year INTEGER;
+BEGIN
+    -- Get current year
+    curr_year := EXTRACT(YEAR FROM CURRENT_DATE);
+    
+    -- Check last reset
+    SELECT reset_date INTO last_reset_timestamp
+    FROM leave_reset_logs
+    WHERE status = 'SUCCESS' AND new_year = curr_year
+    ORDER BY reset_date DESC
+    LIMIT 1;
+    
+    -- Prevent accidental double reset
+    IF last_reset_timestamp IS NOT NULL AND NOT force_reset THEN
+        RETURN format('Reset already performed for year %s on %s. Use force_reset=TRUE to override.', 
+                     curr_year, last_reset_timestamp);
+    END IF;
+    
+    -- Perform reset
+    PERFORM reset_annual_leave_balances();
+    
+    RETURN 'Leave reset completed successfully.';
+END;
+$$ LANGUAGE plpgsql;
+
+
+
+                  -- Function to handle monthly leave accrual
+
+CREATE OR REPLACE FUNCTION process_monthly_leave_accrual()
+RETURNS void AS $$
+DECLARE
+    current_month INTEGER;
+    current_year INTEGER;
+    affected_count INTEGER;
+    accrual_rate NUMERIC(4,2) := 1.75; -- Same rate as in calculate_leave_balance
+    log_details JSONB;
+BEGIN
+    current_month := EXTRACT(MONTH FROM CURRENT_DATE);
+    current_year := EXTRACT(YEAR FROM CURRENT_DATE);
+    
+    -- Start transaction
+    BEGIN
+        -- Update leave balances for eligible employees
+        WITH updated_balances AS (
+            UPDATE leave_balances lb
+            SET 
+                annual_leave_balance = annual_leave_balance + accrual_rate,
+                updated_at = CURRENT_TIMESTAMP
+            FROM employees e
+            WHERE lb.employee_id = e.id
+            AND lb.year = current_year
+            -- Only accrue for employees who have started before this month
+            AND (
+                EXTRACT(YEAR FROM e.hire_date) < current_year
+                OR (
+                    EXTRACT(YEAR FROM e.hire_date) = current_year
+                    AND EXTRACT(MONTH FROM e.hire_date) <= current_month
+                )
+            )
+            -- Only accrue for active employees
+            AND e.status = 'active'
+            RETURNING lb.employee_id
+        )
+        SELECT COUNT(*) INTO affected_count FROM updated_balances;
+
+        -- Prepare log details
+        log_details := jsonb_build_object(
+            'affected_employees', affected_count,
+            'accrual_rate', accrual_rate,
+            'processing_timestamp', CURRENT_TIMESTAMP
+        );
+
+        -- Insert successful log entry
+        INSERT INTO leave_accrual_logs (
+            month,
+            year,
+            employees_affected,
+            accrual_rate,
+            status,
+            details
+        ) VALUES (
+            current_month,
+            current_year,
+            affected_count,
+            accrual_rate,
+            'SUCCESS',
+            log_details
+        );
+
+        -- Raise notice for monitoring
+        RAISE NOTICE 'Successfully processed monthly leave accrual for % employees', affected_count;
+
+    EXCEPTION WHEN OTHERS THEN
+        -- Log error
+        INSERT INTO leave_accrual_logs (
+            month,
+            year,
+            accrual_rate,
+            status,
+            error_message,
+            details
+        ) VALUES (
+            current_month,
+            current_year,
+            accrual_rate,
+            'ERROR',
+            SQLERRM,
+            jsonb_build_object(
+                'error_detail', SQLERRM,
+                'error_hint', SQLHINT,
+                'error_context', SQLCONTEXT
+            )
+        );
+        
+        -- Re-raise the error
+        RAISE EXCEPTION 'Failed to process monthly leave accrual: %', SQLERRM;
+    END;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT cron.schedule(
+    'monthly-leave-accrual',               -- Job name
+    '1 0 1 * *',                          -- Cron schedule (1st minute, 0 hour, 1st day, any month, any day of week)
+    'SELECT process_monthly_leave_accrual()'
+);
+
+          -- Function to view accrual history
+
+CREATE OR REPLACE FUNCTION view_leave_accrual_history(
+    start_date DATE DEFAULT CURRENT_DATE - INTERVAL '1 year',
+    end_date DATE DEFAULT CURRENT_DATE
+)
+RETURNS TABLE (
+    accrual_date TIMESTAMP,
+    month INTEGER,
+    year INTEGER,
+    employees_affected INTEGER,
+    accrual_rate NUMERIC(4,2),
+    status VARCHAR(50),
+    error_message TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        l.accrual_date,
+        l.month,
+        l.year,
+        l.employees_affected,
+        l.accrual_rate,
+        l.status,
+        l.error_message
+    FROM leave_accrual_logs l
+    WHERE l.accrual_date BETWEEN start_date AND end_date
+    ORDER BY l.accrual_date DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+              -- Function to manually trigger accrual (with safety checks)
+
+CREATE OR REPLACE FUNCTION manual_leave_accrual(force_accrual BOOLEAN DEFAULT FALSE)
+RETURNS TEXT AS $$
+DECLARE
+    last_accrual_timestamp TIMESTAMP;
+    current_month INTEGER;
+    current_year INTEGER;
+BEGIN
+    current_month := EXTRACT(MONTH FROM CURRENT_DATE);
+    current_year := EXTRACT(YEAR FROM CURRENT_DATE);
+    
+    -- Check last accrual
+    SELECT accrual_date INTO last_accrual_timestamp
+    FROM leave_accrual_logs
+    WHERE status = 'SUCCESS' 
+    AND month = current_month 
+    AND year = current_year
+    ORDER BY accrual_date DESC
+    LIMIT 1;
+    
+    -- Prevent accidental double accrual
+    IF last_accrual_timestamp IS NOT NULL AND NOT force_accrual THEN
+        RETURN format('Accrual already processed for %s-%s on %s. Use force_accrual=TRUE to override.', 
+                     current_year, current_month, last_accrual_timestamp);
+    END IF;
+    
+    -- Perform accrual
+    PERFORM process_monthly_leave_accrual();
+    
+    RETURN 'Leave accrual completed successfully.';
+END;
+$$ LANGUAGE plpgsql;
+
+-- Schedule the monthly accrual job (requires pg_cron extension)
+SELECT cron.schedule('monthly-leave-accrual', '0 0 1 * *', $$
+    SELECT process_monthly_leave_accrual();
+$$);
+
+-- Function to adjust default leave balances if needed
+
+CREATE OR REPLACE FUNCTION update_default_leave_entitlements(
+    new_sick_leave INTEGER DEFAULT NULL,
+    new_compassionate_leave INTEGER DEFAULT NULL
+) RETURNS TEXT AS $$
+DECLARE
+    curr_year INTEGER;
+BEGIN
+    curr_year := EXTRACT(YEAR FROM CURRENT_DATE);
+    
+    IF new_sick_leave IS NOT NULL THEN
+        UPDATE leave_balances 
+        SET sick_leave_balance = new_sick_leave
+        WHERE year = curr_year
+        AND sick_leave_used = 0;
+    END IF;
+    
+    IF new_compassionate_leave IS NOT NULL THEN
+        UPDATE leave_balances 
+        SET compassionate_leave_entitlement = new_compassionate_leave
+        WHERE year = curr_year
+        AND compassionate_leave_used = 0;
+    END IF;
+    
+    RETURN format('Updated default entitlements: Sick Leave: %s, Compassionate Leave: %s', 
+                 COALESCE(new_sick_leave::text, 'unchanged'), 
+                 COALESCE(new_compassionate_leave::text, 'unchanged'));
+END;
+$$ LANGUAGE plpgsql;
+
+-- View to check current entitlements
+CREATE OR REPLACE VIEW employee_leave_entitlements AS
+SELECT 
+    e.id as employee_id,
+    e.first_name,
+    e.last_name,
+    lb.year,
+    lb.annual_leave_balance,
+    lb.sick_leave_balance,
+    lb.compassionate_leave_entitlement,
+    lb.annual_leave_used,
+    lb.sick_leave_used,
+    lb.compassionate_leave_used
+FROM 
+    employees e
+    JOIN leave_balances lb ON e.id = lb.employee_id
+WHERE 
+    lb.year = EXTRACT(YEAR FROM CURRENT_DATE)
+ORDER BY 
+    e.id;

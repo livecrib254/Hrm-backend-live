@@ -24,14 +24,17 @@ const transporter = nodemailer.createTransport({
 
 
 // Helper function to get the current month
-//const getCurrentMonth = () => new Date().toISOString().slice(0, 7);
-const getCurrentMonth = () => {
-    const currentYear =2024 //new Date().getFullYear();
-    return `${currentYear}-01`; // Sets the month to June
-  };
+const getCurrentMonth = () => new Date().toISOString().slice(0, 7);
+const getCurrentDate = () => new Date().toISOString().slice(0, 10);
+
+// const getCurrentMonth = () => {
+//     const currentYear = new Date().getFullYear();
+//     return `${currentYear}-01`; // Sets the month to June
+//   };
 
 router.get('/processbulkpayroll', async (req, res) => {
   const month = getCurrentMonth();
+  const fullDate = getCurrentDate ()
   console.log(month)
   try {
     // Check if payroll is already processed for this month
@@ -71,7 +74,7 @@ router.get('/processbulkpayroll', async (req, res) => {
           VALUES
             ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
           [
-            info.employee_id, "2024-01-05", info.basic_salary, info.house_allowance,
+            info.employee_id, fullDate, info.basic_salary, info.house_allowance,
             info.transport_allowance, info.other_allowances, info.other_deductions,
             info.overtime, info.bonus, info.personal_relief, info.insurance_relief,
             info.helb_deduction, info.sacco_deduction
