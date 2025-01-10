@@ -142,16 +142,24 @@ router.get("/download/:filename", (req, res) => {
 router.get("/leave", async (req, res) => {
   try {
     const result = await pool.query(`SELECT 
-      leave_requests.*, -- Select all columns from the payroll table
-      employees.first_name || ' ' || employees.last_name AS name, -- Concatenate first and last name as 'name'
-      employees.department, 
-      employees.position
-  FROM 
-      leave_requests
-  JOIN 
-      employees 
-  ON 
-      leave_requests.employee_id = employees.id;
+    DATE_PART('year', leave_requests.start_date) AS year, -- Extract the year from the start_date column
+    leave_requests.*, -- Select all columns from the leave_requests table
+    employees.first_name || ' ' || employees.last_name AS name, -- Concatenate first and last name as 'name'
+    employees.department, 
+    employees.position
+FROM 
+    leave_requests
+JOIN 
+    employees 
+ON 
+    leave_requests.employee_id = employees.id
+GROUP BY 
+    year, -- Group by the extracted year
+    leave_requests.id, -- Include all columns in leave_requests in the GROUP BY
+    employees.id -- Include all columns used from employees in the GROUP BY
+ORDER BY 
+    year;
+
   `);
     res.json({ leaves: result.rows });
   } catch (err) {
@@ -162,16 +170,24 @@ router.get("/leave", async (req, res) => {
 router.get("/discplinary", async (req, res) => {
   try {
     const result = await pool.query(`SELECT 
-      disciplinary_cases.*, -- Select all columns from the payroll table
-      employees.first_name || ' ' || employees.last_name AS name, -- Concatenate first and last name as 'name'
-      employees.department, 
-      employees.position
-  FROM 
-      disciplinary_cases
-  JOIN 
-      employees 
-  ON 
-      disciplinary_cases.employee_id = employees.id;
+    DATE_PART('year', disciplinary_cases.created_at) AS year, -- Extract the year from the date_reported column
+    disciplinary_cases.*, -- Select all columns from the disciplinary_cases table
+    employees.first_name || ' ' || employees.last_name AS name, -- Concatenate first and last name as 'name'
+    employees.department, 
+    employees.position
+FROM 
+    disciplinary_cases
+JOIN 
+    employees 
+ON 
+    disciplinary_cases.employee_id = employees.id
+GROUP BY 
+    year, -- Group by the extracted year
+    disciplinary_cases.id, -- Include all columns in disciplinary_cases in the GROUP BY
+    employees.id -- Include all columns used from employees in the GROUP BY
+ORDER BY 
+    year;
+
   `);
     res.json({ cases: result.rows });
   } catch (err) {
@@ -183,16 +199,24 @@ router.get("/staffreq", async (req, res) => {
   console.log(req.body);
   try {
     const result = await pool.query(`SELECT 
-      staff_requisitions.*, -- Select all columns from the payroll table
-      employees.first_name || ' ' || employees.last_name AS name, -- Concatenate first and last name as 'name'
-      employees.department, 
-      employees.position
-  FROM 
-      staff_requisitions
-  JOIN 
-      employees 
-  ON 
-      staff_requisitions.requester_id = employees.id;
+    DATE_PART('year', staff_requisitions.created_at) AS year, -- Extract the year from the date_requested column
+    staff_requisitions.*, -- Select all columns from the staff_requisitions table
+    employees.first_name || ' ' || employees.last_name AS name, -- Concatenate first and last name as 'name'
+    employees.department, 
+    employees.position
+FROM 
+    staff_requisitions
+JOIN 
+    employees 
+ON 
+    staff_requisitions.requester_id = employees.id
+GROUP BY 
+    year, -- Group by the extracted year
+    staff_requisitions.id, -- Include all columns from staff_requisitions in the GROUP BY
+    employees.id -- Include all columns used from employees in the GROUP BY
+ORDER BY 
+    year;
+
   `);
 
     res.json({ staffReq: result.rows });

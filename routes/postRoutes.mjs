@@ -138,13 +138,17 @@ router.post("/dashboardData", async (req, res) => {
         );
         const totalPayroll = await pool.query(
           `SELECT DATE_PART('year', month) AS year, SUM(gross_pay) AS total_gross_pay
-           FROM (
-               SELECT DISTINCT ON (employee_id) employee_id, gross_pay, month
-               FROM payroll
-               ORDER BY employee_id, month DESC, created_at DESC  
-           ) AS monthly_salaries
-           GROUP BY DATE_PART('year', month)
-           ORDER BY year`
+FROM (
+    SELECT DISTINCT ON (employee_id, DATE_TRUNC('month', month)) 
+        employee_id, 
+        DATE_TRUNC('month', month) AS month, 
+        gross_pay
+    FROM payroll
+    ORDER BY employee_id, DATE_TRUNC('month', month), created_at DESC
+) AS unique_monthly_payments
+GROUP BY DATE_PART('year', month)
+ORDER BY year;
+`
         );
 
         const leaveRequests = await pool.query(
