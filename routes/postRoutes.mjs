@@ -266,6 +266,7 @@ router.post("/employeedash", async (req, res) => {
                 e.employee_number,
                 e.position,
                 e.department,
+                e.kra_pin,
                 DATE(e.hire_date) AS hire_date,
                 COALESCE(date_part('year', p.month), lb.year) AS year, -- Use year from payroll if available, otherwise from leave_balances
                 COALESCE(TO_CHAR(p.month, 'Mon'), 'N/A') AS month,  -- Use month from payroll if available, otherwise 'N/A'
